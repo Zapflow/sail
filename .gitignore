@@ -7,3 +7,5 @@ generated-style.css
 .lsp
 *.log
 *.gen.css
+.idea/
+*.iml

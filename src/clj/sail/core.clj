@@ -1,26 +1,28 @@
 (ns sail.core
-  (:require [juxt.dirwatch :as dw]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [clojure.string :as s]
-            [sail.normalize :refer [normalize]]
-            ;; [clojure.tools.logging.impl]
-            [taoensso.timbre :as log]
-            [taoensso.timbre.appenders.core :as log-appenders]
+            [juxt.dirwatch :as dw]
+            [sail.accessibility :refer [accessibility]]
+   ;; [clojure.tools.logging.impl]
             [sail.base :refer [base]]
             [sail.components :refer [components]]
-            [sail.accessibility :refer [accessibility]]
-            [sail.transition :refer [transition]]))
+            [sail.normalize :refer [normalize]]
+            [sail.transition :refer [transition]]
+            [taoensso.timbre :as log]
+            [taoensso.timbre.appenders.core :as log-appenders])
+  (:import (java.io PushbackReader)))
 
 (log/merge-config!
-  {:appenders {:println (log-appenders/println-appender
-                          {:stream (java.io.OutputStreamWriter. System/out)})}})
+ {:appenders {:println (log-appenders/println-appender
+                        {:stream (java.io.OutputStreamWriter. System/out)})}})
 
 (defn prefix
   "Include . for class names, ignore for reserved words like 'html'."
   [n]
   ;; TODO generate these definitions based on the normalize array map,
   ;; this is PRETTY long and you will need to maintain it otherwise.
-  (if (contains? #{:html :body :main :h1 :h2 :h3 :h4 :h5 :h6 
+  (if (contains? #{:html :body :main :h1 :h2 :h3 :h4 :h5 :h6
                    :section :nav :header :footer :hr :pre :a
                    :b :strong :code :kbd :samp :small :sub :sup :img
                    :svg :video :canvas :audio :iframe :embed :object
@@ -72,21 +74,21 @@
 
 (defn style->string [smap]
   (reduce
-    (fn [output-string [k v]]
-      (if (or (map? v) (vector? v))
-        (str output-string (->selector k) "{" (style->string v) "}")
-        (str output-string (name k) ":" (if (keyword? v)
-                                          (name v) v) ";")))
-    "" (if (map? smap) smap (partition 2 smap))))
+   (fn [output-string [k v]]
+     (if (or (map? v) (vector? v))
+       (str output-string (->selector k) "{" (style->string v) "}")
+       (str output-string (name k) ":" (if (keyword? v)
+                                         (name v) v) ";")))
+   "" (if (map? smap) smap (partition 2 smap))))
 
 (defn with-responsive-prefix
   "Apply a min-width media query an class prefix to styles e.g md:text-gray-700"
   [smap prefix screen-width]
   (str "@media (min-width: " screen-width "){"
-  (style->string
-    (reduce (fn [coll [k v]]
-              (into coll [(str prefix "\\" k) v]))
-            [] (partition 2 smap))) "}"))
+       (style->string
+        (reduce (fn [coll [k v]]
+                  (into coll [(str prefix "\\" k) v]))
+                [] (partition 2 smap))) "}"))
 
 (def all (reduce into [normalize base components accessibility transition]))
 
@@ -109,15 +111,15 @@
 
 (defn split-tags-and-classes [tags]
   (reduce
-    (fn [coll tag]
-      (into coll 
-            (if (keyword? tag)
-              (-> tag
-                  name
-                  (clojure.string/split #"\.")
-                  (#(map keyword %)))
-              [tag])))
-    [] tags))
+   (fn [coll tag]
+     (into coll
+           (if (keyword? tag)
+             (-> tag
+                 name
+                 (clojure.string/split #"\.")
+                 (#(map keyword %)))
+             [tag])))
+   [] tags))
 
 (defn convert-pseudo-classes
   "Converts hiccup class reference to css or what we expect in sail's lookup table e.g :hover:red-400 -> :hover\\:red-400:hover"
@@ -136,27 +138,28 @@
 (defn purge-styles [css-styles used-css-classes]
   (let [split-used-css-classes (-> (split-tags-and-classes used-css-classes)
                                    convert-pseudo-classes)]
-        (reduce (fn [coll [k v]]
-                  (if (some #{k} split-used-css-classes)
-                    (into coll [k v])
-                    coll))
-                [] (partition 2 css-styles))))
+    (reduce (fn [coll [k v]]
+              (if (some #{k} split-used-css-classes)
+                (into coll [k v])
+                coll))
+            [] (partition 2 css-styles))))
 
 (defn all-keywords-in-file [filepath]
-  (let [reader (java.io.PushbackReader. (clojure.java.io/reader filepath))
+  (let [file-str (slurp filepath)
+        normalized (string/replace file-str "::" ":")
+        reader (PushbackReader. (io/reader (char-array normalized)))
         eof (Object.)]
-    (try ;; TODO we can't read files with syntax errors, we should detect this!
-      (set
-        ;; TODO still getting "Invalid token ::inject/sub etc" for reagent namespaced pieces when reading .cljs files
-        ;; N.B we use simple-keyword? > keyword? to avoid keywords with namespaces as it's not normal to use these in
-        ;; hiccup where we expect to see tailwind classes.
-        (filter simple-keyword?
-          (flatten ;; TODO may have to flatten completely
-            (loop [acc []
-                   form (read reader false eof)]
-              (if (identical? eof form)
-                acc
-                (recur (conj acc form) (read reader false eof)))))))
+    (try
+      (->> (loop [acc []
+                  form (read reader false eof)]
+             (if (identical? form eof)
+               acc
+               (let [next (try (read reader false eof)
+                               (catch Exception e
+                                 (read reader false eof)))]
+                 (recur (conj acc form) next))))
+           (flatten)
+           (filter simple-keyword?))
       (catch Exception e
         (log/info (str "Exception while reading keywords in file: " filepath ", got: " (.getMessage e)))))))
 
@@ -196,8 +199,8 @@
                    generated-content))))
 
 (defonce
-  ^{:doc "Contains the dirwatch process to control sail's watching for compilation process"}
-  css-watcher (atom nil))
+ ^{:doc "Contains the dirwatch process to control sail's watching for compilation process"}
+ css-watcher (atom nil))
 
 (def default-opts
   {:purge true})
@@ -231,16 +234,16 @@
    (watch output {}))
   ([output {:keys [paths] :as opts}]
    (let [dirs (or paths [(System/getProperty "user.dir")])]
-         (io/make-parents output)
-         (log/info output opts)
-         (build output opts)
-         (reset! css-watcher
-                 (apply (partial dw/watch-dir (watch-fn output opts))
-                        (map io/file dirs))
-                 ;; (apply dw/watch-dir (into [(watch-fn output opts)] (io/file dirs)))
-                 ;; (dw/watch-dir (watch-fn output opts) (io/file (first dirs)))
-                 )
-         (log/info (str "sail watcher started, monitoring file changes under " dirs)))))
+     (io/make-parents output)
+     (log/info output opts)
+     (build output opts)
+     (reset! css-watcher
+             (apply (partial dw/watch-dir (watch-fn output opts))
+                    (map io/file dirs))
+             ;; (apply dw/watch-dir (into [(watch-fn output opts)] (io/file dirs)))
+             ;; (dw/watch-dir (watch-fn output opts) (io/file (first dirs)))
+             )
+     (log/info (str "sail watcher started, monitoring file changes under " dirs)))))
 
 (defn stop-watch []
   (if @css-watcher
